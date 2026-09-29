@@ -102,3 +102,32 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
 
 Detailed design: `docs/PHASE2_INTELLIGENCE_AND_DECISION.md`.
 <!-- PHASE2-END -->
+## Phase 3 - Resilience, Crisis Adaptation & Fault Matrix
+
+Phase 3 hardens the V1 operational loop against both domain crises and simulator/API engineering failures.
+
+Verified capabilities:
+
+- resilience/observability foundation with health, metrics, incidents, bounded retries and last-verified read-only fallback
+- all six official domain crises: `demand_spike`, `route_disruption`, `station_outage`, `depot_constraint`, `shipment_delay`, `supply_shortfall`
+- combined-domain-crisis detection and replanning
+- full engineering fault matrix: `unavailable`, `latency`, `error_rate`, `stale_data`, `stream_disconnect`
+- REST polling fallback while SSE is degraded
+- stale/unknown-state execution blocking
+- fresh-state recovery and state resynchronization
+- human-reviewed, idempotent allocation execution remains the safety boundary
+
+Run the Phase 3 judge demo:
+
+```powershell
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
+-File "E:\bup-fuelops-resilience-2026\scripts\RUN_PHASE3.ps1"
+```
+
+Detailed Phase 3 docs:
+
+- `docs/PHASE3A_RESILIENCE_OBSERVABILITY.md`
+- `docs/PHASE3B_CRISIS_ADAPTATION.md`
+- `docs/PHASE3C_FAULT_MATRIX_AND_FREEZE.md`
+
+Phase 4 is intentionally separate and covers load/performance and fresh-clone reproducibility.

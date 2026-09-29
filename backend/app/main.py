@@ -161,7 +161,7 @@ def create_app(
 
     app = FastAPI(
         title="BUP FuelOps Resilience API",
-        version="0.3.1-phase3b",
+        version="0.3.2-phase3c",
         lifespan=lifespan,
     )
 
