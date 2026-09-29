@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import type {
   AllocationRecommendation,
+  CrisisSummary,
   DecisionSupportBundle,
   Depot,
   Health,
@@ -266,6 +267,7 @@ export default function App() {
   const [systemHealth, setSystemHealth] = useState<SystemHealth | null>(null);
   const [systemMetrics, setSystemMetrics] = useState<SystemMetrics | null>(null);
   const [incidents, setIncidents] = useState<IncidentRecord[]>([]);
+  const [crisis, setCrisis] = useState<CrisisSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [decisionMessage, setDecisionMessage] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -279,6 +281,7 @@ export default function App() {
         nextSystemHealth,
         nextSystemMetrics,
         nextIncidents,
+        nextCrisis,
       ] = await Promise.all([
         api.snapshot(),
         api.health(),
@@ -286,6 +289,7 @@ export default function App() {
         api.systemHealth(),
         api.systemMetrics(),
         api.incidents(),
+        api.crisis(),
       ]);
       setSnapshot(nextSnapshot);
       setHealth(nextHealth);
@@ -293,6 +297,7 @@ export default function App() {
       setSystemHealth(nextSystemHealth);
       setSystemMetrics(nextSystemMetrics);
       setIncidents(nextIncidents);
+      setCrisis(nextCrisis);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load operational state");
@@ -498,6 +503,71 @@ export default function App() {
               <span><StatusPill value={route.status} /></span>
             </div>
           ))}
+        </div>
+      </section>
+
+
+      <section className="section">
+        <div className="section-title">
+          <div>
+            <p className="eyebrow">Domain Resilience</p>
+            <h2>Crisis Response</h2>
+          </div>
+          <div className="hero-status">
+            <span>Level</span>
+            <RiskPill value={crisis?.crisis_level ?? "NORMAL"} />
+          </div>
+        </div>
+
+        <div className="crisis-summary-grid">
+          <article className="metric card">
+            <span>Operational crises</span>
+            <strong>{crisis?.active_crisis_count ?? 0}</strong>
+          </article>
+          <article className="metric card">
+            <span>Combined crisis</span>
+            <strong>{crisis?.combined_crisis ? "YES" : "NO"}</strong>
+          </article>
+          <article className="metric card">
+            <span>Replan</span>
+            <strong>{crisis?.replan_required ? "REQUIRED" : "STABLE"}</strong>
+          </article>
+        </div>
+
+        {(crisis?.decision_context.length ?? 0) > 0 && (
+          <div className="incident">
+            {crisis?.decision_context.map((item) => (
+              <div key={item}>{item}</div>
+            ))}
+          </div>
+        )}
+
+        <div className="crisis-grid">
+          {(crisis?.assessments ?? [])
+            .filter(
+              (item) =>
+                item.operational_status === "ACTIVE"
+                || item.operational_status === "PERSISTENT_EFFECT",
+            )
+            .slice(0, 6)
+            .map((item) => (
+              <article className="card crisis-card" key={`${item.event_id}-${item.event_type}`}>
+                <div className="card-head">
+                  <div>
+                    <p className="eyebrow">Event #{item.event_id}</p>
+                    <h3>{item.event_type.replaceAll("_", " ")}</h3>
+                  </div>
+                  <StatusPill value={item.operational_status} />
+                </div>
+                <p className="subtle">{item.affected_resources.join(" Â· ")}</p>
+                <div className="reason-tags">
+                  <span>{item.severity}</span>
+                  {item.adaptation_actions.slice(0, 2).map((action) => (
+                    <span key={action}>{action}</span>
+                  ))}
+                </div>
+              </article>
+            ))}
         </div>
       </section>
 

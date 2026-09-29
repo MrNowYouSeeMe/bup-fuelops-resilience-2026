@@ -142,6 +142,35 @@ IncidentSeverity = Literal["INFO", "MEDIUM", "HIGH", "CRITICAL"]
 IncidentStatus = Literal["ACTIVE", "RESOLVED"]
 
 
+CrisisLevel = Literal["NORMAL", "ELEVATED", "HIGH", "CRITICAL"]
+CrisisOperationalStatus = Literal["SCHEDULED", "ACTIVE", "PERSISTENT_EFFECT", "RESOLVED", "UNKNOWN"]
+
+
+class CrisisAssessment(BaseModel):
+    event_id: str
+    event_type: str
+    simulator_status: str
+    operational_status: CrisisOperationalStatus
+    severity: IncidentSeverity
+    start_tick: int
+    end_tick: int
+    affected_resources: list[str] = Field(default_factory=list)
+    impacts: list[str] = Field(default_factory=list)
+    adaptation_actions: list[str] = Field(default_factory=list)
+
+
+class CrisisSummary(BaseModel):
+    generated_at: str
+    snapshot_tick: int
+    crisis_level: CrisisLevel
+    combined_crisis: bool
+    active_crisis_count: int
+    active_types: list[str] = Field(default_factory=list)
+    replan_required: bool
+    assessments: list[CrisisAssessment] = Field(default_factory=list)
+    decision_context: list[str] = Field(default_factory=list)
+
+
 class LatencySummary(BaseModel):
     sample_count: int
     avg_ms: float

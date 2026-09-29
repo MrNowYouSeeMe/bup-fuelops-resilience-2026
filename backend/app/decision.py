@@ -5,6 +5,7 @@ import hashlib
 from datetime import datetime, timezone
 from typing import Any
 
+from .crisis import supply_pressure_for_candidate
 from .schemas import (
     AllocationAlternative,
     AllocationRecommendation,
@@ -210,9 +211,16 @@ def _candidate_score(
     quantity: float,
     need_reference: float,
     transit_ticks: int,
+    operational_penalty: float = 0.0,
 ) -> float:
     coverage = min(quantity / max(need_reference, 1.0), 1.0)
-    return round(risk.risk_score * 100.0 + coverage * 18.0 - transit_ticks * 6.0, 3)
+    return round(
+        risk.risk_score * 100.0
+        + coverage * 18.0
+        - transit_ticks * 6.0
+        - max(operational_penalty, 0.0),
+        3,
+    )
 
 
 def _recommendation_id(
@@ -292,7 +300,18 @@ def build_recommendations(
                 continue
 
             transit = max(_int(route.get("transit_ticks"), 1), 1)
-            score = _candidate_score(risk, quantity, need_reference, transit)
+            operational_penalty, crisis_reasons = supply_pressure_for_candidate(
+                snapshot,
+                depot_id=str(depot.get("id")),
+                fuel_type=fuel,
+            )
+            score = _candidate_score(
+                risk,
+                quantity,
+                need_reference,
+                transit,
+                operational_penalty=operational_penalty,
+            )
             candidates.append(
                 {
                     "depot": depot,
@@ -301,6 +320,7 @@ def build_recommendations(
                     "transit": transit,
                     "score": score,
                     "checks": checks,
+                    "crisis_reasons": crisis_reasons,
                 }
             )
 
@@ -318,6 +338,9 @@ def build_recommendations(
 
         executable = snapshot.data_freshness == "FRESH"
         reason_codes = list(risk.reason_codes)
+        for code in best.get("crisis_reasons", []):
+            if code not in reason_codes:
+                reason_codes.append(code)
         if not executable:
             reason_codes.append("DEGRADED_DATA_BLOCKS_EXECUTION")
 

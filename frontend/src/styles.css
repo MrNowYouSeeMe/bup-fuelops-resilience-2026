@@ -270,3 +270,25 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 @media (max-width: 820px) {
   .observability-grid { grid-template-columns: 1fr; }
 }
+
+.crisis-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.crisis-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+.crisis-card { border-color: #694d25; }
+.crisis-card h3 { text-transform: capitalize; }
+.risk-normal { border-color: #276653; background: #10372e; color: #8ce8c7; }
+.risk-elevated { border-color: #6b5c20; background: #362e0c; color: #f5d36f; }
+.pill-active { border-color: #8a4d21; background: #40220d; color: #ffb56f; }
+.pill-persistent-effect { border-color: #805f24; background: #3b2b0f; color: #f0c86c; }
+.pill-resolved { border-color: #276653; background: #10372e; color: #8ce8c7; }
+@media (max-width: 820px) {
+  .crisis-grid, .crisis-summary-grid { grid-template-columns: 1fr; }
+}

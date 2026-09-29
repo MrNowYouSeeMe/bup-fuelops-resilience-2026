@@ -1,4 +1,5 @@
 import type {
+  CrisisSummary,
   DecisionRecord,
   DecisionSupportBundle,
   Health,
@@ -50,6 +51,7 @@ export const api = {
   systemHealth: () => requestJson<SystemHealth>("/api/system/health"),
   systemMetrics: () => requestJson<SystemMetrics>("/api/system/metrics"),
   incidents: () => requestJson<IncidentRecord[]>("/api/incidents"),
+  crisis: () => requestJson<CrisisSummary>("/api/crisis"),
   decisionSupport: () =>
     requestJson<DecisionSupportBundle>("/api/decision-support"),
   approveRecommendation: (recommendationId: string) =>

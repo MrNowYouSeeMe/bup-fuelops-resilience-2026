@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import config
+from .crisis import analyze_crises
 from .decision import (
     DecisionStore,
     build_recommendations,
@@ -24,6 +25,7 @@ from .observability import ObservabilityHub
 from .schemas import (
     AppHealth,
     ComponentHealth,
+    CrisisSummary,
     DecisionRecord,
     DecisionSupportBundle,
     ForecastResult,
@@ -45,8 +47,10 @@ from .state import SnapshotStore, StreamMonitor
 
 
 async def _refresh_snapshot(app: FastAPI) -> OperationalSnapshot:
+    snapshot: OperationalSnapshot | None = None
     try:
-        return await app.state.snapshot_store.refresh(app.state.simulator_client)
+        snapshot = await app.state.snapshot_store.refresh(app.state.simulator_client)
+        return snapshot
     finally:
         observability = getattr(app.state, "observability", None)
         if observability is not None:
@@ -54,6 +58,9 @@ async def _refresh_snapshot(app: FastAPI) -> OperationalSnapshot:
                 app.state.snapshot_store,
                 app.state.stream_monitor,
             )
+            current = snapshot or getattr(app.state.snapshot_store, "current", None)
+            if current is not None:
+                observability.reconcile_domain_crises(analyze_crises(current))
 
 
 async def _poll_loop(app: FastAPI) -> None:
@@ -154,7 +161,7 @@ def create_app(
 
     app = FastAPI(
         title="BUP FuelOps Resilience API",
-        version="0.3.0-phase3a",
+        version="0.3.1-phase3b",
         lifespan=lifespan,
     )
 
@@ -290,6 +297,13 @@ def create_app(
             request.app.state.stream_monitor,
         )
         return hub.incidents.history()
+
+    @app.get("/api/crisis", response_model=CrisisSummary)
+    async def crisis(request: Request) -> CrisisSummary:
+        snap = await _get_snapshot(request)
+        summary = analyze_crises(snap)
+        request.app.state.observability.reconcile_domain_crises(summary)
+        return summary
 
     @app.get("/api/snapshot", response_model=OperationalSnapshot)
     async def snapshot(request: Request) -> OperationalSnapshot:

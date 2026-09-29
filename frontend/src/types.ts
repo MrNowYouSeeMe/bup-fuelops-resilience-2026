@@ -200,3 +200,28 @@ export interface IncidentRecord {
   detail: string;
   occurrences: number;
 }
+
+export interface CrisisAssessment {
+  event_id: string;
+  event_type: string;
+  simulator_status: string;
+  operational_status: "SCHEDULED" | "ACTIVE" | "PERSISTENT_EFFECT" | "RESOLVED" | "UNKNOWN";
+  severity: "INFO" | "MEDIUM" | "HIGH" | "CRITICAL";
+  start_tick: number;
+  end_tick: number;
+  affected_resources: string[];
+  impacts: string[];
+  adaptation_actions: string[];
+}
+
+export interface CrisisSummary {
+  generated_at: string;
+  snapshot_tick: number;
+  crisis_level: "NORMAL" | "ELEVATED" | "HIGH" | "CRITICAL";
+  combined_crisis: boolean;
+  active_crisis_count: number;
+  active_types: string[];
+  replan_required: boolean;
+  assessments: CrisisAssessment[];
+  decision_context: string[];
+}

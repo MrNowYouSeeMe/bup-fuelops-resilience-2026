@@ -172,6 +172,34 @@ const systemMetrics = {
   active_incidents: 0,
 };
 
+
+const crisis = {
+  generated_at: "2026-01-01T08:00:00Z",
+  snapshot_tick: 32,
+  crisis_level: "CRITICAL",
+  combined_crisis: true,
+  active_crisis_count: 2,
+  active_types: ["demand_spike", "route_disruption"],
+  replan_required: true,
+  assessments: [
+    {
+      event_id: "7",
+      event_type: "route_disruption",
+      simulator_status: "ACTIVE",
+      operational_status: "ACTIVE",
+      severity: "HIGH",
+      start_tick: 32,
+      end_tick: 36,
+      affected_resources: ["route:route-gazipur-mirpur"],
+      impacts: ["Affected routes are unavailable for new allocations while active."],
+      adaptation_actions: ["Replan using an available route."],
+    },
+  ],
+  decision_context: [
+    "Multiple domain crises overlap; treat recommendations as a combined-crisis replan.",
+  ],
+};
+
 const incidents = [
   {
     incident_id: "inc-0001",
@@ -225,6 +253,13 @@ function mockFetch(options?: { stale?: boolean; approveError?: boolean }) {
 
     if (url.endsWith("/api/incidents")) {
       return new Response(JSON.stringify(incidents), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (url.endsWith("/api/crisis")) {
+      return new Response(JSON.stringify(crisis), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
@@ -331,6 +366,20 @@ describe("Phase 2 operator dashboard", () => {
       expect(screen.getByText(/Decision blocked: RECOMMENDATION_INVALIDATED/)).toBeInTheDocument();
     });
   });
+  it("renders domain crisis response and combined replan state", async () => {
+    vi.stubGlobal("fetch", mockFetch());
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Crisis Response")).toBeInTheDocument();
+    });
+
+    expect(screen.getByText("YES")).toBeInTheDocument();
+    expect(screen.getByText("REQUIRED")).toBeInTheDocument();
+    expect(screen.getByText("route disruption")).toBeInTheDocument();
+    expect(screen.getByText(/combined-crisis replan/i)).toBeInTheDocument();
+  });
+
   it("renders resilience and observability metrics", async () => {
     vi.stubGlobal("fetch", mockFetch());
     render(<App />);

@@ -9,6 +9,7 @@ from typing import Any
 from . import config
 from .schemas import (
     ComponentHealth,
+    CrisisSummary,
     IncidentRecord,
     LatencySummary,
     SystemHealth,
@@ -157,6 +158,7 @@ class ObservabilityHub:
         self.incidents = IncidentStore()
         self.recommendation_batches = 0
         self.recommendations_generated = 0
+        self._known_domain_incident_keys: set[str] = set()
 
     def note_recommendations(self, count: int) -> None:
         self.recommendation_batches += 1
@@ -212,6 +214,57 @@ class ObservabilityHub:
                 "sse-degraded",
                 detail="SSE connection recovered.",
                 tick=tick,
+            )
+
+    def reconcile_domain_crises(self, summary: CrisisSummary) -> None:
+        active_keys: set[str] = set()
+
+        for assessment in summary.assessments:
+            key = f"domain-event-{assessment.event_id}-{assessment.event_type}"
+            if assessment.operational_status in {"ACTIVE", "PERSISTENT_EFFECT"}:
+                active_keys.add(key)
+                self._known_domain_incident_keys.add(key)
+                self.incidents.open_or_update(
+                    key,
+                    kind=f"DOMAIN_{assessment.event_type.upper()}",
+                    severity=assessment.severity,
+                    detail=(
+                        f"{assessment.event_type} is {assessment.operational_status}; "
+                        + "; ".join(assessment.impacts[:2])
+                    ),
+                    tick=summary.snapshot_tick,
+                )
+            elif key in self._known_domain_incident_keys:
+                self.incidents.resolve(
+                    key,
+                    detail=f"{assessment.event_type} no longer requires active crisis handling.",
+                    tick=summary.snapshot_tick,
+                )
+
+        for key in self._known_domain_incident_keys - active_keys:
+            self.incidents.resolve(
+                key,
+                detail="Domain crisis is no longer active in the current simulator state.",
+                tick=summary.snapshot_tick,
+            )
+
+        combined_key = "combined-domain-crisis"
+        if summary.combined_crisis:
+            self.incidents.open_or_update(
+                combined_key,
+                kind="COMBINED_DOMAIN_CRISIS",
+                severity="CRITICAL",
+                detail=(
+                    "Overlapping domain crises require coordinated replanning: "
+                    + ", ".join(summary.active_types)
+                ),
+                tick=summary.snapshot_tick,
+            )
+        else:
+            self.incidents.resolve(
+                combined_key,
+                detail="Combined domain crisis condition cleared.",
+                tick=summary.snapshot_tick,
             )
 
     def system_metrics(
