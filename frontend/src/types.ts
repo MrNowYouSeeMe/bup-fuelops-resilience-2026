@@ -1,4 +1,6 @@
-export type FuelMap = Record<"DIESEL" | "PETROL" | "OCTANE", number>;
+export type FuelType = "DIESEL" | "PETROL" | "OCTANE";
+export type FuelMap = Record<FuelType, number>;
+export type RiskLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 
 export interface Station {
   id: string;
@@ -33,6 +35,7 @@ export interface Route {
 export interface Snapshot {
   captured_at: string;
   tick: number;
+  tick_minutes: number;
   sim_time: string | null;
   simulation_status: string;
   data_freshness: "FRESH" | "STALE" | "UNKNOWN";
@@ -56,4 +59,90 @@ export interface Health {
   tick: number | null;
   reconnects: number;
   events_seen: number;
+}
+
+export interface ForecastResult {
+  station_id: string;
+  fuel_type: FuelType;
+  horizon_ticks: number;
+  predicted_demand_liters: number;
+  demand_per_tick: number;
+  confidence: number;
+  method: string;
+  sample_count: number;
+  per_tick_liters: number[];
+}
+
+export interface RiskAssessment {
+  station_id: string;
+  fuel_type: FuelType;
+  risk_level: RiskLevel;
+  runway_ticks: number | null;
+  projected_stockout_tick: number | null;
+  confidence: number;
+  reason_codes: string[];
+  inventory_liters: number;
+  capacity_liters: number;
+  inbound_liters: number;
+  fastest_route_ticks: number | null;
+  risk_score: number;
+}
+
+export interface ConstraintCheck {
+  code: string;
+  passed: boolean;
+  detail: string;
+}
+
+export interface AllocationAlternative {
+  source_depot_id: string;
+  route_id: string;
+  quantity: number;
+  transit_ticks: number;
+  score: number;
+}
+
+export interface AllocationRecommendation {
+  recommendation_id: string;
+  generated_tick: number;
+  source_depot_id: string;
+  destination_station_id: string;
+  route_id: string;
+  fuel_type: FuelType;
+  quantity: number;
+  priority: RiskLevel;
+  confidence: number;
+  risk_before: number;
+  risk_after: number;
+  constraints_checked: boolean;
+  human_review_required: boolean;
+  executable: boolean;
+  expected_arrival_tick: number;
+  expected_runway_after_ticks: number | null;
+  recommended_action: string;
+  safe_boundary: string;
+  reason_codes: string[];
+  constraints: ConstraintCheck[];
+  alternatives: AllocationAlternative[];
+}
+
+export interface DecisionSupportBundle {
+  generated_at: string;
+  snapshot_tick: number;
+  data_freshness: "FRESH" | "STALE" | "UNKNOWN";
+  forecasts: ForecastResult[];
+  risks: RiskAssessment[];
+  recommendations: AllocationRecommendation[];
+}
+
+export interface DecisionRecord {
+  decision_id: string;
+  recommendation_id: string;
+  action: "APPROVE" | "REJECT" | "BLOCK";
+  status: "EXECUTED" | "REJECTED" | "BLOCKED";
+  decided_at: string;
+  decision_tick: number | null;
+  reason: string | null;
+  allocation: Record<string, unknown> | null;
+  invalidated_constraints: string[];
 }

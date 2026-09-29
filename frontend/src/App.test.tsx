@@ -1,11 +1,12 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 
 const snapshot = {
-  captured_at: "2026-01-01T00:00:00Z",
-  tick: 0,
-  sim_time: "2026-01-01T00:00:00+00:00",
+  captured_at: "2026-01-01T08:00:00Z",
+  tick: 32,
+  tick_minutes: 15,
+  sim_time: "2026-01-01T08:00:00+00:00",
   simulation_status: "PAUSED",
   data_freshness: "FRESH",
   depots: [
@@ -28,7 +29,7 @@ const snapshot = {
       demand_profile: "urban_high",
       demand_multiplier: 1,
       capacity: { DIESEL: 15000, PETROL: 14000, OCTANE: 9000 },
-      inventory: { DIESEL: 9000, PETROL: 9000, OCTANE: 5000 },
+      inventory: { DIESEL: 300, PETROL: 3900, OCTANE: 2400 },
     },
   ],
   routes: [
@@ -45,7 +46,7 @@ const snapshot = {
   events: [],
   allocations: [],
   demand_history: [],
-  metrics: { service_level: 1 },
+  metrics: { service_level: 0.98 },
   degraded_reasons: [],
 };
 
@@ -55,60 +56,204 @@ const health = {
   simulator: { status: "HEALTHY" },
   sse: { status: "HEALTHY" },
   snapshot: { status: "HEALTHY" },
-  tick: 0,
+  tick: 32,
   reconnects: 0,
-  events_seen: 0,
+  events_seen: 3,
 };
 
+const forecast = {
+  station_id: "station-mirpur",
+  fuel_type: "DIESEL",
+  horizon_ticks: 16,
+  predicted_demand_liters: 3200,
+  demand_per_tick: 200,
+  confidence: 0.84,
+  method: "profile_adjusted_ewma",
+  sample_count: 16,
+  per_tick_liters: Array(16).fill(200),
+};
+
+const risk = {
+  station_id: "station-mirpur",
+  fuel_type: "DIESEL",
+  risk_level: "CRITICAL",
+  runway_ticks: 2,
+  projected_stockout_tick: 34,
+  confidence: 0.84,
+  reason_codes: ["LOW_INVENTORY", "STOCKOUT_WITHIN_FORECAST_HORIZON"],
+  inventory_liters: 300,
+  capacity_liters: 15000,
+  inbound_liters: 0,
+  fastest_route_ticks: 2,
+  risk_score: 0.92,
+};
+
+const recommendation = {
+  recommendation_id: "rec-abc",
+  generated_tick: 32,
+  source_depot_id: "depot-gazipur",
+  destination_station_id: "station-mirpur",
+  route_id: "route-gazipur-mirpur",
+  fuel_type: "DIESEL",
+  quantity: 7000,
+  priority: "CRITICAL",
+  confidence: 0.84,
+  risk_before: 0.92,
+  risk_after: 0.28,
+  constraints_checked: true,
+  human_review_required: true,
+  executable: true,
+  expected_arrival_tick: 34,
+  expected_runway_after_ticks: 36.5,
+  recommended_action: "Allocate 7,000 L DIESEL from depot-gazipur to station-mirpur.",
+  safe_boundary: "Human approval required. Fresh state is revalidated before execution.",
+  reason_codes: ["LOW_INVENTORY", "STOCKOUT_WITHIN_FORECAST_HORIZON"],
+  constraints: [{ code: "ROUTE_STATUS", passed: true, detail: "status=AVAILABLE" }],
+  alternatives: [],
+};
+
+const support = {
+  generated_at: "2026-01-01T08:00:00Z",
+  snapshot_tick: 32,
+  data_freshness: "FRESH",
+  forecasts: [forecast],
+  risks: [risk],
+  recommendations: [recommendation],
+};
+
+const decision = {
+  decision_id: "dec-1",
+  recommendation_id: "rec-abc",
+  action: "APPROVE",
+  status: "EXECUTED",
+  decided_at: "2026-01-01T08:00:01Z",
+  decision_tick: 32,
+  reason: "approved",
+  allocation: { id: 11, idempotency_key: "fuelops-rec-abc" },
+  invalidated_constraints: [],
+};
+
+function mockFetch(options?: { stale?: boolean; approveError?: boolean }) {
+  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+
+    if (url.endsWith("/api/health")) {
+      return new Response(JSON.stringify(health), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (url.endsWith("/api/snapshot")) {
+      return new Response(
+        JSON.stringify(
+          options?.stale
+            ? { ...snapshot, data_freshness: "STALE" }
+            : snapshot,
+        ),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    if (url.endsWith("/api/decision-support")) {
+      return new Response(
+        JSON.stringify(
+          options?.stale
+            ? {
+                ...support,
+                data_freshness: "STALE",
+                recommendations: [{ ...recommendation, executable: false }],
+              }
+            : support,
+        ),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    if (url.includes("/approve") && init?.method === "POST") {
+      if (options?.approveError) {
+        return new Response(
+          JSON.stringify({
+            detail: { code: "RECOMMENDATION_INVALIDATED", message: "Fresh-state revalidation failed." },
+          }),
+          { status: 409, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify(decision), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (url.includes("/reject") && init?.method === "POST") {
+      return new Response(
+        JSON.stringify({ ...decision, action: "REJECT", status: "REJECTED", allocation: null }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    return new Response("not found", { status: 404 });
+  });
+}
+
 afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
-describe("Phase 1 dashboard", () => {
-  it("renders normalized live-state contract", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        const body = url.endsWith("/api/health") ? health : snapshot;
-        return new Response(JSON.stringify(body), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }),
-    );
-
+describe("Phase 2 operator dashboard", () => {
+  it("renders forecast, risk and human-review recommendation", async () => {
+    vi.stubGlobal("fetch", mockFetch());
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByText("Mirpur Fuel Station")).toBeInTheDocument();
+      expect(screen.getByText("Demand & Stockout Intelligence")).toBeInTheDocument();
     });
 
-    expect(screen.getByText("Gazipur Depot")).toBeInTheDocument();
-    expect(screen.getByText("100.00%")).toBeInTheDocument();
-    expect(screen.getAllByText("HEALTHY").length).toBeGreaterThan(0);
-    expect(screen.getByText(/depot-gazipur â†’ station-mirpur/)).toBeInTheDocument();
+    expect(screen.getAllByText("Mirpur Fuel Station").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("CRITICAL").length).toBeGreaterThan(0);
+    expect(screen.getByText("Approve & Execute")).toBeInTheDocument();
+    expect(screen.getByText(/Allocate 7,000 L DIESEL/)).toBeInTheDocument();
   });
 
-  it("shows a degraded-data warning", async () => {
-    const stale = { ...snapshot, data_freshness: "STALE" };
-
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        const body = url.endsWith("/api/health") ? health : stale;
-        return new Response(JSON.stringify(body), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }),
-    );
-
+  it("approves a recommendation and shows allocation feedback", async () => {
+    const fetchMock = mockFetch();
+    vi.stubGlobal("fetch", fetchMock);
     render(<App />);
 
+    const button = await screen.findByRole("button", { name: "Approve & Execute" });
+    fireEvent.click(button);
+
     await waitFor(() => {
-      expect(screen.getByText(/Data freshness: STALE/)).toBeInTheDocument();
+      expect(screen.getByText(/Allocation executed/)).toBeInTheDocument();
+    });
+
+    expect(
+      fetchMock.mock.calls.some(([input, init]) =>
+        String(input).includes("/api/recommendations/rec-abc/approve")
+        && (init as RequestInit | undefined)?.method === "POST",
+      ),
+    ).toBe(true);
+  });
+
+  it("blocks approval button when data is stale", async () => {
+    vi.stubGlobal("fetch", mockFetch({ stale: true }));
+    render(<App />);
+
+    const button = await screen.findByText("Execution Blocked");
+    expect(button).toBeDisabled();
+    expect(screen.getByText(/Data freshness: STALE/)).toBeInTheDocument();
+  });
+
+  it("surfaces fresh-state invalidation from backend", async () => {
+    vi.stubGlobal("fetch", mockFetch({ approveError: true }));
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Approve & Execute" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Decision blocked: RECOMMENDATION_INVALIDATED/)).toBeInTheDocument();
     });
   });
 });

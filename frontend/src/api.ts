@@ -1,18 +1,62 @@
-import type { Health, Snapshot } from "./types";
+import type {
+  DecisionRecord,
+  DecisionSupportBundle,
+  Health,
+  Snapshot,
+} from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8001";
 
-async function getJson<T>(path: string): Promise<T> {
+async function requestJson<T>(
+  path: string,
+  init?: RequestInit,
+): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
-    headers: { Accept: "application/json" },
+    ...init,
+    headers: {
+      Accept: "application/json",
+      ...(init?.body ? { "Content-Type": "application/json" } : {}),
+      ...(init?.headers ?? {}),
+    },
   });
+
   if (!response.ok) {
-    throw new Error(`${path} returned HTTP ${response.status}`);
+    let detail = `${path} returned HTTP ${response.status}`;
+    try {
+      const body = (await response.json()) as {
+        detail?: string | { code?: string; message?: string };
+      };
+      if (typeof body.detail === "string") {
+        detail = body.detail;
+      } else if (body.detail) {
+        const code = body.detail.code ? `${body.detail.code}: ` : "";
+        detail = `${code}${body.detail.message ?? detail}`;
+      }
+    } catch {
+      // Keep HTTP fallback message.
+    }
+    throw new Error(detail);
   }
+
   return response.json() as Promise<T>;
 }
 
 export const api = {
-  snapshot: () => getJson<Snapshot>("/api/snapshot"),
-  health: () => getJson<Health>("/api/health"),
+  snapshot: () => requestJson<Snapshot>("/api/snapshot"),
+  health: () => requestJson<Health>("/api/health"),
+  decisionSupport: () =>
+    requestJson<DecisionSupportBundle>("/api/decision-support"),
+  approveRecommendation: (recommendationId: string) =>
+    requestJson<DecisionRecord>(
+      `/api/recommendations/${encodeURIComponent(recommendationId)}/approve`,
+      { method: "POST" },
+    ),
+  rejectRecommendation: (recommendationId: string, reason?: string) =>
+    requestJson<DecisionRecord>(
+      `/api/recommendations/${encodeURIComponent(recommendationId)}/reject`,
+      {
+        method: "POST",
+        body: JSON.stringify({ reason: reason ?? null }),
+      },
+    ),
 };

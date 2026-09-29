@@ -1,6 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
-import type { Depot, Health, Snapshot, Station } from "./types";
+import type {
+  AllocationRecommendation,
+  DecisionSupportBundle,
+  Depot,
+  Health,
+  ForecastResult,
+  RiskAssessment,
+  Snapshot,
+  Station,
+} from "./types";
 import "./styles.css";
 
 const fuels = ["DIESEL", "PETROL", "OCTANE"] as const;
@@ -8,6 +17,18 @@ const fuels = ["DIESEL", "PETROL", "OCTANE"] as const;
 function StatusPill({ value }: { value: string }) {
   const normalized = value.toLowerCase().replaceAll("_", "-");
   return <span className={`pill pill-${normalized}`}>{value}</span>;
+}
+
+function RiskPill({ value }: { value: string }) {
+  return <span className={`risk risk-${value.toLowerCase()}`}>{value}</span>;
+}
+
+function pct(value: number) {
+  return `${Math.round(value * 100)}%`;
+}
+
+function liters(value: number) {
+  return `${Math.round(value).toLocaleString()} L`;
 }
 
 function InventoryBars({
@@ -22,7 +43,7 @@ function InventoryBars({
       {fuels.map((fuel) => {
         const amount = Number(inventory?.[fuel] ?? 0);
         const max = Math.max(Number(capacity?.[fuel] ?? 0), 1);
-        const pct = Math.max(0, Math.min(100, (amount / max) * 100));
+        const width = Math.max(0, Math.min(100, (amount / max) * 100));
         return (
           <div className="inventory-row" key={fuel}>
             <div className="inventory-meta">
@@ -30,7 +51,7 @@ function InventoryBars({
               <strong>{amount.toLocaleString()} L</strong>
             </div>
             <div className="bar">
-              <span style={{ width: `${pct}%` }} />
+              <span style={{ width: `${width}%` }} />
             </div>
           </div>
         );
@@ -68,9 +89,169 @@ function DepotCard({ depot }: { depot: Depot }) {
         <StatusPill value={depot.status} />
       </div>
       <p className="subtle">
-        Dispatch capacity {depot.dispatch_capacity_per_tick.toLocaleString()} L/tick
+        Dispatch {depot.dispatch_capacity_per_tick.toLocaleString()} L/tick
       </p>
       <InventoryBars inventory={depot.inventory} capacity={depot.capacity} />
+    </article>
+  );
+}
+
+function RiskTable({
+  risks,
+  support,
+  stationName,
+}: {
+  risks: RiskAssessment[];
+  support: DecisionSupportBundle;
+  stationName: (id: string) => string;
+}) {
+  const forecastMap = useMemo(
+    () =>
+      new Map<string, ForecastResult>(
+        support.forecasts.map(
+          (f): [string, ForecastResult] => [`${f.station_id}|${f.fuel_type}`, f],
+        ),
+      ),
+    [support],
+  );
+
+  return (
+    <div className="table card intelligence-table">
+      <div className="table-row intelligence-row table-head-row">
+        <span>Station / Fuel</span>
+        <span>Forecast</span>
+        <span>Runway</span>
+        <span>Stockout</span>
+        <span>Confidence</span>
+        <span>Risk</span>
+      </div>
+      {risks.map((risk) => {
+        const forecast = forecastMap.get(`${risk.station_id}|${risk.fuel_type}`);
+        return (
+          <div
+            className="table-row intelligence-row"
+            key={`${risk.station_id}-${risk.fuel_type}`}
+          >
+            <span>
+              <strong>{stationName(risk.station_id)}</strong>
+              <small>{risk.fuel_type}</small>
+            </span>
+            <span>
+              {forecast ? liters(forecast.predicted_demand_liters) : "â€”"}
+              <small>{forecast?.method ?? "â€”"}</small>
+            </span>
+            <span>
+              {risk.runway_ticks == null ? "â€”" : `${risk.runway_ticks.toFixed(1)} ticks`}
+            </span>
+            <span>
+              {risk.projected_stockout_tick == null
+                ? "Beyond horizon"
+                : `Tick ${risk.projected_stockout_tick}`}
+            </span>
+            <span>{pct(risk.confidence)}</span>
+            <span><RiskPill value={risk.risk_level} /></span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function RecommendationCard({
+  recommendation,
+  stationName,
+  busy,
+  onApprove,
+  onReject,
+}: {
+  recommendation: AllocationRecommendation;
+  stationName: (id: string) => string;
+  busy: boolean;
+  onApprove: (id: string) => Promise<void>;
+  onReject: (id: string) => Promise<void>;
+}) {
+  const failed = recommendation.constraints.filter((c) => !c.passed);
+
+  return (
+    <article className="card recommendation-card">
+      <div className="card-head">
+        <div>
+          <p className="eyebrow">Human Review Required</p>
+          <h3>{stationName(recommendation.destination_station_id)} Â· {recommendation.fuel_type}</h3>
+        </div>
+        <RiskPill value={recommendation.priority} />
+      </div>
+
+      <p className="recommendation-action">{recommendation.recommended_action}</p>
+
+      <div className="recommendation-metrics">
+        <div>
+          <span>Quantity</span>
+          <strong>{liters(recommendation.quantity)}</strong>
+        </div>
+        <div>
+          <span>Arrival</span>
+          <strong>Tick {recommendation.expected_arrival_tick}</strong>
+        </div>
+        <div>
+          <span>Confidence</span>
+          <strong>{pct(recommendation.confidence)}</strong>
+        </div>
+        <div>
+          <span>Risk</span>
+          <strong>{pct(recommendation.risk_before)} â†’ {pct(recommendation.risk_after)}</strong>
+        </div>
+      </div>
+
+      <div className="route-line">
+        <code>{recommendation.source_depot_id}</code>
+        <span>â†’</span>
+        <code>{recommendation.route_id}</code>
+        <span>â†’</span>
+        <code>{recommendation.destination_station_id}</code>
+      </div>
+
+      <div className="reason-tags">
+        {recommendation.reason_codes.slice(0, 4).map((reason) => (
+          <span key={reason}>{reason.replaceAll("_", " ")}</span>
+        ))}
+      </div>
+
+      <p className="safe-boundary">{recommendation.safe_boundary}</p>
+
+      {recommendation.alternatives.length > 0 && (
+        <details className="alternatives">
+          <summary>{recommendation.alternatives.length} alternate route option(s)</summary>
+          {recommendation.alternatives.map((alt) => (
+            <p key={`${alt.route_id}-${alt.source_depot_id}`}>
+              {alt.route_id} Â· {liters(alt.quantity)} Â· {alt.transit_ticks} ticks
+            </p>
+          ))}
+        </details>
+      )}
+
+      {failed.length > 0 && (
+        <div className="incident compact">
+          Constraint issue: {failed.map((c) => c.code).join(", ")}
+        </div>
+      )}
+
+      <div className="decision-actions">
+        <button
+          className="button secondary"
+          disabled={busy}
+          onClick={() => void onReject(recommendation.recommendation_id)}
+        >
+          Reject
+        </button>
+        <button
+          className="button primary"
+          disabled={busy || !recommendation.executable}
+          onClick={() => void onApprove(recommendation.recommendation_id)}
+        >
+          {busy ? "Workingâ€¦" : recommendation.executable ? "Approve & Execute" : "Execution Blocked"}
+        </button>
+      </div>
     </article>
   );
 }
@@ -78,16 +259,21 @@ function DepotCard({ depot }: { depot: Depot }) {
 export default function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
+  const [support, setSupport] = useState<DecisionSupportBundle | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [decisionMessage, setDecisionMessage] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   const load = async () => {
     try {
-      const [nextSnapshot, nextHealth] = await Promise.all([
+      const [nextSnapshot, nextHealth, nextSupport] = await Promise.all([
         api.snapshot(),
         api.health(),
+        api.decisionSupport(),
       ]);
       setSnapshot(nextSnapshot);
       setHealth(nextHealth);
+      setSupport(nextSupport);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load operational state");
@@ -100,15 +286,52 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, []);
 
+  const stationName = (stationId: string) =>
+    snapshot?.stations.find((s) => s.id === stationId)?.name ?? stationId;
+
   const serviceLevel = useMemo(() => {
     const raw = snapshot?.metrics?.service_level;
     return typeof raw === "number" ? `${(raw * 100).toFixed(2)}%` : "â€”";
   }, [snapshot]);
 
+  const criticalCount =
+    support?.risks.filter((r) => r.risk_level === "CRITICAL").length ?? 0;
+  const highCount =
+    support?.risks.filter((r) => r.risk_level === "HIGH").length ?? 0;
+
+  const decide = async (
+    recommendationId: string,
+    action: "approve" | "reject",
+  ) => {
+    setBusyId(recommendationId);
+    setDecisionMessage(null);
+    try {
+      const record =
+        action === "approve"
+          ? await api.approveRecommendation(recommendationId)
+          : await api.rejectRecommendation(recommendationId);
+      if (record.status === "EXECUTED") {
+        const allocationId = record.allocation?.id;
+        setDecisionMessage(
+          `Allocation executed${allocationId ? ` Â· simulator allocation #${allocationId}` : ""}.`,
+        );
+      } else {
+        setDecisionMessage("Recommendation rejected by operator.");
+      }
+      await load();
+    } catch (err) {
+      setDecisionMessage(
+        err instanceof Error ? `Decision blocked: ${err.message}` : "Decision failed.",
+      );
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   if (!snapshot && !error) {
     return (
       <main className="shell">
-        <div className="loading card">Loading live fuel networkâ€¦</div>
+        <div className="loading card">Loading live fuel network and intelligenceâ€¦</div>
       </main>
     );
   }
@@ -117,11 +340,11 @@ export default function App() {
     <main className="shell">
       <header className="hero">
         <div>
-          <p className="eyebrow">BUP CSE Fest 2026 Â· Fuel Supply Simulator</p>
+          <p className="eyebrow">BUP CSE Fest 2026 Â· Operational AI</p>
           <h1>FuelOps Resilience</h1>
           <p className="hero-copy">
-            Live operational state from the official simulator. Phase 1 establishes
-            the trusted integration layer before decision intelligence is added.
+            Live simulator state, demand forecasting, stockout risk and constrained
+            allocation recommendations with human approval and fresh-state revalidation.
           </p>
         </div>
         <div className="hero-health">
@@ -133,39 +356,88 @@ export default function App() {
       {error && <section className="incident">Backend connection: {error}</section>}
       {snapshot?.data_freshness !== "FRESH" && (
         <section className="incident">
-          Data freshness: {snapshot?.data_freshness}. Operational state may be degraded.
+          Data freshness: {snapshot?.data_freshness}. Recommendations may be shown,
+          but execution is blocked until fresh REST state returns.
         </section>
       )}
+      {decisionMessage && <section className="decision-message">{decisionMessage}</section>}
 
-      <section className="metrics-grid">
-        <article className="metric card">
-          <span>Simulation</span>
-          <strong>{snapshot?.simulation_status ?? "UNKNOWN"}</strong>
-        </article>
+      <section className="metrics-grid phase2-metrics">
         <article className="metric card">
           <span>Service level</span>
           <strong>{serviceLevel}</strong>
         </article>
         <article className="metric card">
-          <span>Stations</span>
-          <strong>{snapshot?.stations.length ?? 0}</strong>
+          <span>Critical / High risks</span>
+          <strong>{criticalCount} / {highCount}</strong>
         </article>
         <article className="metric card">
-          <span>Routes available</span>
-          <strong>
-            {snapshot?.routes.filter((r) => r.status === "AVAILABLE").length ?? 0}/
-            {snapshot?.routes.length ?? 0}
-          </strong>
+          <span>Recommendations</span>
+          <strong>{support?.recommendations.length ?? 0}</strong>
         </article>
+        <article className="metric card">
+          <span>Forecast horizon</span>
+          <strong>{support?.forecasts[0]?.horizon_ticks ?? 0} ticks</strong>
+        </article>
+      </section>
+
+      {support && (
+        <section className="section">
+          <div className="section-title">
+            <div>
+              <p className="eyebrow">Predict â†’ Assess Risk</p>
+              <h2>Demand & Stockout Intelligence</h2>
+            </div>
+            <span className="subtle">
+              12 station Ã— fuel forecasts Â· {support.data_freshness}
+            </span>
+          </div>
+          <RiskTable
+            risks={support.risks}
+            support={support}
+            stationName={stationName}
+          />
+        </section>
+      )}
+
+      <section className="section">
+        <div className="section-title">
+          <div>
+            <p className="eyebrow">Decide â†’ Validate â†’ Act</p>
+            <h2>Operator Recommendations</h2>
+          </div>
+          <span className="subtle">No autonomous allocation</span>
+        </div>
+
+        {support?.recommendations.length ? (
+          <div className="recommendation-grid">
+            {support.recommendations.map((recommendation) => (
+              <RecommendationCard
+                key={recommendation.recommendation_id}
+                recommendation={recommendation}
+                stationName={stationName}
+                busy={busyId === recommendation.recommendation_id}
+                onApprove={(id) => decide(id, "approve")}
+                onReject={(id) => decide(id, "reject")}
+              />
+            ))}
+          </div>
+        ) : (
+          <article className="card empty-state">
+            <h3>No allocation recommendation right now</h3>
+            <p className="subtle">
+              Current forecast and inventory do not cross the Phase 2 action threshold.
+            </p>
+          </article>
+        )}
       </section>
 
       <section className="section">
         <div className="section-title">
           <div>
-            <p className="eyebrow">Network</p>
+            <p className="eyebrow">Observe</p>
             <h2>Fuel Stations</h2>
           </div>
-          <span className="subtle">12 station Ã— fuel states</span>
         </div>
         <div className="grid two">
           {snapshot?.stations.map((station) => (
@@ -196,11 +468,11 @@ export default function App() {
           </div>
         </div>
         <div className="table card">
-          <div className="table-row table-head-row">
+          <div className="table-row route-row table-head-row">
             <span>Route</span><span>Transit</span><span>Max</span><span>Status</span>
           </div>
           {snapshot?.routes.map((route) => (
-            <div className="table-row" key={route.id}>
+            <div className="table-row route-row" key={route.id}>
               <span>{route.source_depot_id} â†’ {route.destination_station_id}</span>
               <span>{route.transit_ticks} ticks</span>
               <span>{route.max_shipment.toLocaleString()} L</span>
@@ -208,19 +480,6 @@ export default function App() {
             </div>
           ))}
         </div>
-      </section>
-
-      <section className="grid two section">
-        <article className="card">
-          <p className="eyebrow">Upcoming supply</p>
-          <h2>{snapshot?.supply_arrivals.length ?? 0} records</h2>
-          <p className="subtle">Read directly from /v1/supply-arrivals.</p>
-        </article>
-        <article className="card">
-          <p className="eyebrow">Active / historical events</p>
-          <h2>{snapshot?.events.length ?? 0} records</h2>
-          <p className="subtle">Crisis awareness will build on this state in Phase 3.</p>
-        </article>
       </section>
 
       <section className="section">

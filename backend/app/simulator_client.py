@@ -24,6 +24,14 @@ class SimulatorContractError(SimulatorError):
     pass
 
 
+class SimulatorAPIError(SimulatorError):
+    def __init__(self, status_code: int, code: str, message: str) -> None:
+        super().__init__(f"{code}: {message}")
+        self.status_code = status_code
+        self.code = code
+        self.message = message
+
+
 @dataclass
 class SimulatorResponse:
     data: Any
@@ -90,7 +98,29 @@ class SimulatorClient:
         if self._owns_client:
             await self.client.aclose()
 
-    async def _get(self, path: str, *, expected: type, params: dict[str, Any] | None = None) -> SimulatorResponse:
+    @staticmethod
+    def _api_error(response: httpx.Response) -> SimulatorAPIError:
+        code = f"HTTP_{response.status_code}"
+        message = response.text or "Simulator request failed."
+        try:
+            payload = response.json()
+            detail = payload.get("detail") if isinstance(payload, dict) else None
+            error = payload.get("error") if isinstance(payload, dict) else None
+            node = detail if isinstance(detail, dict) else error if isinstance(error, dict) else None
+            if node:
+                code = str(node.get("code") or code)
+                message = str(node.get("message") or message)
+        except ValueError:
+            pass
+        return SimulatorAPIError(response.status_code, code, message)
+
+    async def _get(
+        self,
+        path: str,
+        *,
+        expected: type,
+        params: dict[str, Any] | None = None,
+    ) -> SimulatorResponse:
         try:
             response = await self.client.get(f"{self.base_url}{path}", params=params)
         except (httpx.TimeoutException, httpx.NetworkError) as exc:
@@ -99,7 +129,7 @@ class SimulatorClient:
         if response.status_code >= 500:
             raise SimulatorUnavailable(f"GET {path} returned HTTP {response.status_code}")
         if response.status_code >= 400:
-            raise SimulatorError(f"GET {path} returned HTTP {response.status_code}")
+            raise self._api_error(response)
 
         try:
             data = response.json()
@@ -113,6 +143,61 @@ class SimulatorClient:
 
         stale = response.headers.get("X-Simulator-Stale", "").lower() == "true"
         return SimulatorResponse(data=data, stale=stale)
+
+    async def _post_json(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        expected: type = dict,
+        safe_retry: bool = False,
+    ) -> Any:
+        attempts = 2 if safe_retry else 1
+        last_exc: Exception | None = None
+
+        for attempt in range(attempts):
+            try:
+                response = await self.client.post(
+                    f"{self.base_url}{path}",
+                    json=payload,
+                    headers={"Accept": "application/json", "Content-Type": "application/json"},
+                )
+            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                last_exc = exc
+                if attempt + 1 < attempts:
+                    await asyncio.sleep(0.08)
+                    continue
+                raise SimulatorUnavailable(
+                    f"POST {path} failed: {exc.__class__.__name__}"
+                ) from exc
+
+            if response.status_code >= 500:
+                if safe_retry and attempt + 1 < attempts:
+                    await asyncio.sleep(0.08)
+                    continue
+                raise SimulatorUnavailable(
+                    f"POST {path} returned HTTP {response.status_code}"
+                )
+
+            if response.status_code >= 400:
+                raise self._api_error(response)
+
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise SimulatorContractError(
+                    f"POST {path} did not return valid JSON"
+                ) from exc
+
+            if not isinstance(data, expected):
+                raise SimulatorContractError(
+                    f"POST {path} returned {type(data).__name__}; expected {expected.__name__}"
+                )
+            return data
+
+        raise SimulatorUnavailable(
+            f"POST {path} failed: {last_exc.__class__.__name__ if last_exc else 'unknown'}"
+        )
 
     async def health(self) -> dict[str, Any]:
         return (await self._get("/v1/health", expected=dict)).data
@@ -171,9 +256,14 @@ class SimulatorClient:
                 f"/v1/instance missing required field(s): {', '.join(missing)}"
             )
 
+        tick_minutes = int(instance_data.get("tick_minutes", 15))
+        if tick_minutes <= 0:
+            raise SimulatorContractError("/v1/instance tick_minutes must be > 0")
+
         return OperationalSnapshot(
             captured_at=datetime.now(timezone.utc).isoformat(),
             tick=int(instance_data["tick"]),
+            tick_minutes=tick_minutes,
             sim_time=instance_data.get("sim_time"),
             simulation_status=str(instance_data["status"]),
             data_freshness="STALE" if stale else "FRESH",
@@ -187,6 +277,24 @@ class SimulatorClient:
             demand_history=demand_history.data,
             metrics=metrics.data,
             degraded_reasons=["SIMULATOR_STALE_DATA"] if stale else [],
+        )
+
+    async def create_allocation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        # Allocation creation is safe to retry because the request always carries
+        # a stable idempotency_key. Same key + same body returns the same allocation.
+        return await self._post_json(
+            "/v1/allocations",
+            payload,
+            expected=dict,
+            safe_retry=True,
+        )
+
+    async def cancel_allocation(self, allocation_id: int) -> dict[str, Any]:
+        return await self._post_json(
+            f"/v1/allocations/{allocation_id}/cancel",
+            {},
+            expected=dict,
+            safe_retry=False,
         )
 
     async def stream_events(self) -> AsyncIterator[dict[str, Any]]:

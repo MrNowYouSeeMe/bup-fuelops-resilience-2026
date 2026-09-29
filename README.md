@@ -83,3 +83,22 @@ A better forecasting model or optimizer can be plugged in later through frozen c
 
 `MrNowYouSeeMe/bup-fuelops-resilience-2026`
 <!-- BUP_DOCS_END -->
+<!-- PHASE2-START -->
+## Phase 2 â€” Prediction, Risk & Human-Governed Allocation
+
+Phase 2 adds deterministic/statistical demand forecasting, stockout risk, constrained allocation recommendations, operator Approve/Reject, fresh-state revalidation and idempotent simulator execution.
+
+Run the current judge demo:
+
+```powershell
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
+-File "E:\bup-fuelops-resilience-2026\scripts\RUN_PHASE2.ps1"
+```
+
+- Frontend: `http://127.0.0.1:5173`
+- Backend API docs: `http://127.0.0.1:8001/docs`
+- Decision support: `http://127.0.0.1:8001/api/decision-support`
+- Simulator admin: `http://127.0.0.1:8000/admin`
+
+Detailed design: `docs/PHASE2_INTELLIGENCE_AND_DECISION.md`.
+<!-- PHASE2-END -->
