@@ -6,9 +6,12 @@ import type {
   Depot,
   Health,
   ForecastResult,
+  IncidentRecord,
   RiskAssessment,
   Snapshot,
   Station,
+  SystemHealth,
+  SystemMetrics,
 } from "./types";
 import "./styles.css";
 
@@ -260,20 +263,36 @@ export default function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [support, setSupport] = useState<DecisionSupportBundle | null>(null);
+  const [systemHealth, setSystemHealth] = useState<SystemHealth | null>(null);
+  const [systemMetrics, setSystemMetrics] = useState<SystemMetrics | null>(null);
+  const [incidents, setIncidents] = useState<IncidentRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [decisionMessage, setDecisionMessage] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const load = async () => {
     try {
-      const [nextSnapshot, nextHealth, nextSupport] = await Promise.all([
+      const [
+        nextSnapshot,
+        nextHealth,
+        nextSupport,
+        nextSystemHealth,
+        nextSystemMetrics,
+        nextIncidents,
+      ] = await Promise.all([
         api.snapshot(),
         api.health(),
         api.decisionSupport(),
+        api.systemHealth(),
+        api.systemMetrics(),
+        api.incidents(),
       ]);
       setSnapshot(nextSnapshot);
       setHealth(nextHealth);
       setSupport(nextSupport);
+      setSystemHealth(nextSystemHealth);
+      setSystemMetrics(nextSystemMetrics);
+      setIncidents(nextIncidents);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load operational state");
@@ -479,6 +498,77 @@ export default function App() {
               <span><StatusPill value={route.status} /></span>
             </div>
           ))}
+        </div>
+      </section>
+
+
+      <section className="section">
+        <div className="section-title">
+          <div>
+            <p className="eyebrow">Resilience</p>
+            <h2>Resilience & Observability</h2>
+          </div>
+          <StatusPill value={systemHealth?.status ?? "STARTING"} />
+        </div>
+
+        <div className="metrics-grid">
+          <article className="metric card">
+            <span>API requests</span>
+            <strong>{systemMetrics?.requests_total ?? 0}</strong>
+          </article>
+          <article className="metric card">
+            <span>API p95 latency</span>
+            <strong>{systemMetrics ? `${systemMetrics.latency.p95_ms.toFixed(1)} ms` : "â€”"}</strong>
+          </article>
+          <article className="metric card">
+            <span>Fallback activations</span>
+            <strong>{systemMetrics?.fallback_activations ?? 0}</strong>
+          </article>
+          <article className="metric card">
+            <span>Simulator retries</span>
+            <strong>{systemMetrics?.simulator_retry_count ?? 0}</strong>
+          </article>
+        </div>
+
+        <div className="observability-grid">
+          <article className="card">
+            <div className="card-head">
+              <div>
+                <p className="eyebrow">Safety State</p>
+                <h3>{systemHealth?.data_freshness ?? "UNKNOWN"} data</h3>
+              </div>
+              <StatusPill value={systemHealth?.components.decision?.status ?? "STARTING"} />
+            </div>
+            <p className="subtle">
+              Snapshot recoveries: {systemMetrics?.snapshot_recoveries ?? 0}
+              {" Â· "}SSE reconnects: {systemMetrics?.sse_reconnects ?? 0}
+              {" Â· "}Errors: {systemMetrics ? pct(systemMetrics.error_rate) : "0%"}
+            </p>
+          </article>
+
+          <article className="card">
+            <div className="card-head">
+              <div>
+                <p className="eyebrow">Incidents</p>
+                <h3>{systemMetrics?.active_incidents ?? 0} active</h3>
+              </div>
+            </div>
+            {incidents.length === 0 ? (
+              <p className="subtle">No resilience incidents recorded.</p>
+            ) : (
+              <div className="incident-list">
+                {incidents.slice(0, 4).map((incident) => (
+                  <div className="incident-row" key={incident.incident_id}>
+                    <div>
+                      <strong>{incident.kind.replaceAll("_", " ")}</strong>
+                      <small>{incident.detail}</small>
+                    </div>
+                    <StatusPill value={incident.status} />
+                  </div>
+                ))}
+              </div>
+            )}
+          </article>
         </div>
       </section>
 

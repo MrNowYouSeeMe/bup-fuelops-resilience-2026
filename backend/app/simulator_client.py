@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from time import perf_counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
@@ -93,6 +94,10 @@ class SimulatorClient:
             timeout=httpx.Timeout(self.timeout_seconds),
             headers={"Accept": "application/json"},
         )
+        self.requests_total = 0
+        self.retry_count = 0
+        self.transient_failures = 0
+        self.last_latency_ms: float | None = None
 
     async def close(self) -> None:
         if self._owns_client:
@@ -121,28 +126,56 @@ class SimulatorClient:
         expected: type,
         params: dict[str, Any] | None = None,
     ) -> SimulatorResponse:
-        try:
-            response = await self.client.get(f"{self.base_url}{path}", params=params)
-        except (httpx.TimeoutException, httpx.NetworkError) as exc:
-            raise SimulatorUnavailable(f"GET {path} failed: {exc.__class__.__name__}") from exc
+        attempts = max(1, int(config.SIMULATOR_GET_RETRY_ATTEMPTS))
+        last_exc: Exception | None = None
 
-        if response.status_code >= 500:
-            raise SimulatorUnavailable(f"GET {path} returned HTTP {response.status_code}")
-        if response.status_code >= 400:
-            raise self._api_error(response)
+        for attempt in range(attempts):
+            started = perf_counter()
+            self.requests_total += 1
+            try:
+                response = await self.client.get(f"{self.base_url}{path}", params=params)
+                self.last_latency_ms = round((perf_counter() - started) * 1000.0, 3)
+            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                self.last_latency_ms = round((perf_counter() - started) * 1000.0, 3)
+                self.transient_failures += 1
+                last_exc = exc
+                if attempt + 1 < attempts:
+                    self.retry_count += 1
+                    await asyncio.sleep(config.SIMULATOR_RETRY_BACKOFF_SECONDS)
+                    continue
+                raise SimulatorUnavailable(
+                    f"GET {path} failed after {attempts} attempt(s): {exc.__class__.__name__}"
+                ) from exc
 
-        try:
-            data = response.json()
-        except ValueError as exc:
-            raise SimulatorContractError(f"GET {path} did not return valid JSON") from exc
+            if response.status_code >= 500:
+                self.transient_failures += 1
+                if attempt + 1 < attempts:
+                    self.retry_count += 1
+                    await asyncio.sleep(config.SIMULATOR_RETRY_BACKOFF_SECONDS)
+                    continue
+                raise SimulatorUnavailable(
+                    f"GET {path} returned HTTP {response.status_code} after {attempts} attempt(s)"
+                )
 
-        if not isinstance(data, expected):
-            raise SimulatorContractError(
-                f"GET {path} returned {type(data).__name__}; expected {expected.__name__}"
-            )
+            if response.status_code >= 400:
+                raise self._api_error(response)
 
-        stale = response.headers.get("X-Simulator-Stale", "").lower() == "true"
-        return SimulatorResponse(data=data, stale=stale)
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise SimulatorContractError(f"GET {path} did not return valid JSON") from exc
+
+            if not isinstance(data, expected):
+                raise SimulatorContractError(
+                    f"GET {path} returned {type(data).__name__}; expected {expected.__name__}"
+                )
+
+            stale = response.headers.get("X-Simulator-Stale", "").lower() == "true"
+            return SimulatorResponse(data=data, stale=stale)
+
+        raise SimulatorUnavailable(
+            f"GET {path} failed: {last_exc.__class__.__name__ if last_exc else 'unknown'}"
+        )
 
     async def _post_json(
         self,
@@ -156,6 +189,8 @@ class SimulatorClient:
         last_exc: Exception | None = None
 
         for attempt in range(attempts):
+            started = perf_counter()
+            self.requests_total += 1
             try:
                 response = await self.client.post(
                     f"{self.base_url}{path}",
@@ -163,17 +198,24 @@ class SimulatorClient:
                     headers={"Accept": "application/json", "Content-Type": "application/json"},
                 )
             except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                self.last_latency_ms = round((perf_counter() - started) * 1000.0, 3)
+                self.transient_failures += 1
                 last_exc = exc
                 if attempt + 1 < attempts:
-                    await asyncio.sleep(0.08)
+                    self.retry_count += 1
+                    await asyncio.sleep(config.SIMULATOR_RETRY_BACKOFF_SECONDS)
                     continue
                 raise SimulatorUnavailable(
                     f"POST {path} failed: {exc.__class__.__name__}"
                 ) from exc
 
+            self.last_latency_ms = round((perf_counter() - started) * 1000.0, 3)
+
             if response.status_code >= 500:
+                self.transient_failures += 1
                 if safe_retry and attempt + 1 < attempts:
-                    await asyncio.sleep(0.08)
+                    self.retry_count += 1
+                    await asyncio.sleep(config.SIMULATOR_RETRY_BACKOFF_SECONDS)
                     continue
                 raise SimulatorUnavailable(
                     f"POST {path} returned HTTP {response.status_code}"

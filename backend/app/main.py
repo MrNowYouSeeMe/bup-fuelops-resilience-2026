@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from time import perf_counter
+from uuid import uuid4
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -17,6 +20,7 @@ from .decision import (
     validate_allocation,
 )
 from .intelligence import assess_risks, build_forecasts
+from .observability import ObservabilityHub
 from .schemas import (
     AppHealth,
     ComponentHealth,
@@ -27,6 +31,9 @@ from .schemas import (
     RejectRequest,
     RiskAssessment,
     AllocationRecommendation,
+    IncidentRecord,
+    SystemHealth,
+    SystemMetrics,
 )
 from .simulator_client import (
     SimulatorAPIError,
@@ -37,10 +44,22 @@ from .simulator_client import (
 from .state import SnapshotStore, StreamMonitor
 
 
+async def _refresh_snapshot(app: FastAPI) -> OperationalSnapshot:
+    try:
+        return await app.state.snapshot_store.refresh(app.state.simulator_client)
+    finally:
+        observability = getattr(app.state, "observability", None)
+        if observability is not None:
+            observability.reconcile_runtime(
+                app.state.snapshot_store,
+                app.state.stream_monitor,
+            )
+
+
 async def _poll_loop(app: FastAPI) -> None:
     while True:
         try:
-            await app.state.snapshot_store.refresh(app.state.simulator_client)
+            await _refresh_snapshot(app)
         except Exception:
             pass
         await asyncio.sleep(config.SNAPSHOT_POLL_SECONDS)
@@ -52,9 +71,7 @@ def _horizon_ticks() -> int:
 
 async def _get_snapshot(request: Request) -> OperationalSnapshot:
     try:
-        return await request.app.state.snapshot_store.refresh(
-            request.app.state.simulator_client
-        )
+        return await _refresh_snapshot(request.app)
     except SimulatorError as exc:
         raise HTTPException(
             status_code=503,
@@ -70,6 +87,9 @@ def _compute_support(
     risks = assess_risks(snapshot, forecasts)
     recommendations = build_recommendations(snapshot, forecasts, risks)
     request.app.state.decision_store.remember(recommendations)
+    observability = getattr(request.app.state, "observability", None)
+    if observability is not None:
+        observability.note_recommendations(len(recommendations))
 
     return DecisionSupportBundle(
         generated_at=datetime.now(timezone.utc).isoformat(),
@@ -95,20 +115,24 @@ def create_app(
         app.state.snapshot_store = snapshot_store or SnapshotStore()
         app.state.stream_monitor = stream_monitor or StreamMonitor()
         app.state.decision_store = decision_store or DecisionStore()
+        app.state.observability = ObservabilityHub()
         app.state.tasks = []
 
         if background_enabled:
             try:
-                await app.state.snapshot_store.refresh(app.state.simulator_client)
+                await _refresh_snapshot(app)
             except Exception:
                 pass
+
+            async def on_stream_signal() -> None:
+                await _refresh_snapshot(app)
 
             app.state.tasks = [
                 asyncio.create_task(_poll_loop(app), name="snapshot-poll"),
                 asyncio.create_task(
                     app.state.stream_monitor.run(
                         app.state.simulator_client,
-                        lambda: app.state.snapshot_store.refresh(app.state.simulator_client),
+                        on_stream_signal,
                     ),
                     name="simulator-sse",
                 ),
@@ -130,7 +154,7 @@ def create_app(
 
     app = FastAPI(
         title="BUP FuelOps Resilience API",
-        version="0.2.0-phase2",
+        version="0.3.0-phase3a",
         lifespan=lifespan,
     )
 
@@ -141,6 +165,44 @@ def create_app(
         allow_methods=["GET", "POST"],
         allow_headers=["*"],
     )
+
+
+    @app.middleware("http")
+    async def request_observability(request: Request, call_next):
+        request_id = request.headers.get("X-Request-ID")
+        if not request_id or len(request_id) > 128:
+            request_id = str(uuid4())
+
+        hub = getattr(request.app.state, "observability", None)
+        started = hub.requests.begin() if hub is not None else perf_counter()
+        status_code = 500
+        response = None
+
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            response.headers["X-Request-ID"] = request_id
+            return response
+        finally:
+            if hub is not None:
+                latency_ms = hub.requests.end(started, status_code)
+            else:
+                latency_ms = max(0.0, (perf_counter() - started) * 1000.0)
+
+            print(
+                json.dumps(
+                    {
+                        "event": "http_request",
+                        "request_id": request_id,
+                        "method": request.method,
+                        "path": request.url.path,
+                        "status_code": status_code,
+                        "latency_ms": round(latency_ms, 3),
+                    },
+                    separators=(",", ":"),
+                ),
+                flush=True,
+            )
 
     @app.get("/api/health", response_model=AppHealth)
     async def health(request: Request) -> AppHealth:
@@ -196,6 +258,38 @@ def create_app(
             reconnects=monitor.reconnects,
             events_seen=monitor.events_seen,
         )
+
+
+    @app.get("/api/system/health", response_model=SystemHealth)
+    async def system_health(request: Request) -> SystemHealth:
+        hub: ObservabilityHub = request.app.state.observability
+        return hub.system_health(
+            snapshot_store=request.app.state.snapshot_store,
+            stream_monitor=request.app.state.stream_monitor,
+        )
+
+    @app.get("/api/system/metrics", response_model=SystemMetrics)
+    async def system_metrics(request: Request) -> SystemMetrics:
+        hub: ObservabilityHub = request.app.state.observability
+        hub.reconcile_runtime(
+            request.app.state.snapshot_store,
+            request.app.state.stream_monitor,
+        )
+        return hub.system_metrics(
+            simulator_client=request.app.state.simulator_client,
+            snapshot_store=request.app.state.snapshot_store,
+            stream_monitor=request.app.state.stream_monitor,
+            decision_store=request.app.state.decision_store,
+        )
+
+    @app.get("/api/incidents", response_model=list[IncidentRecord])
+    async def incidents(request: Request) -> list[IncidentRecord]:
+        hub: ObservabilityHub = request.app.state.observability
+        hub.reconcile_runtime(
+            request.app.state.snapshot_store,
+            request.app.state.stream_monitor,
+        )
+        return hub.incidents.history()
 
     @app.get("/api/snapshot", response_model=OperationalSnapshot)
     async def snapshot(request: Request) -> OperationalSnapshot:
@@ -354,6 +448,10 @@ def create_app(
                 allocation=allocation,
             )
             store.save_decision(record)
+            request.app.state.observability.reconcile_runtime(
+                request.app.state.snapshot_store,
+                request.app.state.stream_monitor,
+            )
             return record
 
     @app.post(
@@ -404,6 +502,10 @@ def create_app(
                 reason=body.reason or "Rejected by operator.",
             )
             store.save_decision(record)
+            request.app.state.observability.reconcile_runtime(
+                request.app.state.snapshot_store,
+                request.app.state.stream_monitor,
+            )
             return record
 
     return app

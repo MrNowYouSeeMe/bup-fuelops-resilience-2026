@@ -133,6 +133,60 @@ const decision = {
   invalidated_constraints: [],
 };
 
+
+const systemHealth = {
+  status: "HEALTHY",
+  tick: 32,
+  data_freshness: "FRESH",
+  components: {
+    backend: { status: "HEALTHY" },
+    simulator: { status: "HEALTHY" },
+    snapshot: { status: "HEALTHY" },
+    sse: { status: "HEALTHY" },
+    decision: { status: "HEALTHY" },
+  },
+  degraded_reasons: [],
+  active_incidents: 0,
+};
+
+const systemMetrics = {
+  generated_at: "2026-01-01T08:00:00Z",
+  requests_total: 42,
+  errors_total: 1,
+  error_rate: 0.0238,
+  in_flight: 0,
+  latency: { sample_count: 42, avg_ms: 8.2, p50_ms: 5.1, p95_ms: 18.4, p99_ms: 24.7 },
+  simulator_requests_total: 120,
+  simulator_retry_count: 2,
+  simulator_transient_failures: 2,
+  simulator_last_latency_ms: 4.2,
+  fallback_activations: 1,
+  snapshot_recoveries: 1,
+  sse_reconnects: 0,
+  sse_events_seen: 3,
+  recommendation_batches: 4,
+  recommendations_generated: 7,
+  decisions_executed: 1,
+  decisions_rejected: 0,
+  decisions_blocked: 0,
+  active_incidents: 0,
+};
+
+const incidents = [
+  {
+    incident_id: "inc-0001",
+    kind: "SIMULATOR_UNAVAILABLE",
+    severity: "HIGH",
+    status: "RESOLVED",
+    started_at: "2026-01-01T07:00:00Z",
+    last_updated_at: "2026-01-01T07:00:01Z",
+    resolved_at: "2026-01-01T07:00:01Z",
+    tick: 31,
+    detail: "Simulator data path recovered.",
+    occurrences: 1,
+  },
+];
+
 function mockFetch(options?: { stale?: boolean; approveError?: boolean }) {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -153,6 +207,27 @@ function mockFetch(options?: { stale?: boolean; approveError?: boolean }) {
         ),
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
+    }
+
+    if (url.endsWith("/api/system/health")) {
+      return new Response(JSON.stringify(systemHealth), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (url.endsWith("/api/system/metrics")) {
+      return new Response(JSON.stringify(systemMetrics), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (url.endsWith("/api/incidents")) {
+      return new Response(JSON.stringify(incidents), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
     }
 
     if (url.endsWith("/api/decision-support")) {
@@ -256,4 +331,18 @@ describe("Phase 2 operator dashboard", () => {
       expect(screen.getByText(/Decision blocked: RECOMMENDATION_INVALIDATED/)).toBeInTheDocument();
     });
   });
+  it("renders resilience and observability metrics", async () => {
+    vi.stubGlobal("fetch", mockFetch());
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Resilience & Observability")).toBeInTheDocument();
+    });
+
+    expect(screen.getByText("42")).toBeInTheDocument();
+    expect(screen.getByText("18.4 ms")).toBeInTheDocument();
+    expect(screen.getByText("SIMULATOR UNAVAILABLE")).toBeInTheDocument();
+    expect(screen.getByText("RESOLVED")).toBeInTheDocument();
+  });
+
 });

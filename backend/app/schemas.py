@@ -135,3 +135,61 @@ class DecisionRecord(BaseModel):
     reason: str | None = None
     allocation: dict[str, Any] | None = None
     invalidated_constraints: list[str] = Field(default_factory=list)
+
+
+SystemStatus = Literal["HEALTHY", "DEGRADED", "UNAVAILABLE", "STARTING"]
+IncidentSeverity = Literal["INFO", "MEDIUM", "HIGH", "CRITICAL"]
+IncidentStatus = Literal["ACTIVE", "RESOLVED"]
+
+
+class LatencySummary(BaseModel):
+    sample_count: int
+    avg_ms: float
+    p50_ms: float
+    p95_ms: float
+    p99_ms: float
+
+
+class SystemMetrics(BaseModel):
+    generated_at: str
+    requests_total: int
+    errors_total: int
+    error_rate: float
+    in_flight: int
+    latency: LatencySummary
+    simulator_requests_total: int
+    simulator_retry_count: int
+    simulator_transient_failures: int
+    simulator_last_latency_ms: float | None = None
+    fallback_activations: int
+    snapshot_recoveries: int
+    sse_reconnects: int
+    sse_events_seen: int
+    recommendation_batches: int
+    recommendations_generated: int
+    decisions_executed: int
+    decisions_rejected: int
+    decisions_blocked: int
+    active_incidents: int
+
+
+class SystemHealth(BaseModel):
+    status: SystemStatus
+    tick: int | None = None
+    data_freshness: Freshness = "UNKNOWN"
+    components: dict[str, ComponentHealth]
+    degraded_reasons: list[str] = Field(default_factory=list)
+    active_incidents: int = 0
+
+
+class IncidentRecord(BaseModel):
+    incident_id: str
+    kind: str
+    severity: IncidentSeverity
+    status: IncidentStatus
+    started_at: str
+    last_updated_at: str
+    resolved_at: str | None = None
+    tick: int | None = None
+    detail: str
+    occurrences: int = 1

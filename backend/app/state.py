@@ -14,19 +14,30 @@ class SnapshotStore:
         self.current: OperationalSnapshot | None = None
         self.last_verified: OperationalSnapshot | None = None
         self.last_error: str | None = None
+        self.fallback_activations = 0
+        self.recoveries = 0
+        self.consecutive_failures = 0
+        self.last_fallback_at: str | None = None
+        self.last_recovery_at: str | None = None
         self._lock = asyncio.Lock()
 
     async def refresh(self, client: SimulatorClient) -> OperationalSnapshot:
         async with self._lock:
             try:
                 snapshot = await client.fetch_snapshot()
+                recovering = self.consecutive_failures > 0
                 self.current = snapshot
                 self.last_error = None
+                self.consecutive_failures = 0
                 if snapshot.data_freshness == "FRESH":
                     self.last_verified = snapshot
+                if recovering:
+                    self.recoveries += 1
+                    self.last_recovery_at = datetime.now(timezone.utc).isoformat()
                 return snapshot
             except SimulatorError as exc:
                 self.last_error = str(exc)
+                self.consecutive_failures += 1
                 if self.last_verified is None:
                     raise
 
@@ -35,6 +46,8 @@ class SnapshotStore:
                 fallback.data_freshness = "UNKNOWN"
                 fallback.degraded_reasons = ["SIMULATOR_UNAVAILABLE_USING_LAST_VERIFIED_STATE"]
                 self.current = fallback
+                self.fallback_activations += 1
+                self.last_fallback_at = fallback.captured_at
                 return fallback
 
 
@@ -81,7 +94,6 @@ class StreamMonitor:
                     name = str(event.get("event", "message"))
                     if name == "__connected__":
                         self.note_connected()
-                        # REST is authoritative; refresh after initial connect/reconnect.
                         await on_signal()
                         continue
                     self.note_event(name)

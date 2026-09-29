@@ -2,7 +2,10 @@ import type {
   DecisionRecord,
   DecisionSupportBundle,
   Health,
+  IncidentRecord,
   Snapshot,
+  SystemHealth,
+  SystemMetrics,
 } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8001";
@@ -44,6 +47,9 @@ async function requestJson<T>(
 export const api = {
   snapshot: () => requestJson<Snapshot>("/api/snapshot"),
   health: () => requestJson<Health>("/api/health"),
+  systemHealth: () => requestJson<SystemHealth>("/api/system/health"),
+  systemMetrics: () => requestJson<SystemMetrics>("/api/system/metrics"),
+  incidents: () => requestJson<IncidentRecord[]>("/api/incidents"),
   decisionSupport: () =>
     requestJson<DecisionSupportBundle>("/api/decision-support"),
   approveRecommendation: (recommendationId: string) =>

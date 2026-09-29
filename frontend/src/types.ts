@@ -146,3 +146,57 @@ export interface DecisionRecord {
   allocation: Record<string, unknown> | null;
   invalidated_constraints: string[];
 }
+
+
+export interface LatencySummary {
+  sample_count: number;
+  avg_ms: number;
+  p50_ms: number;
+  p95_ms: number;
+  p99_ms: number;
+}
+
+export interface SystemMetrics {
+  generated_at: string;
+  requests_total: number;
+  errors_total: number;
+  error_rate: number;
+  in_flight: number;
+  latency: LatencySummary;
+  simulator_requests_total: number;
+  simulator_retry_count: number;
+  simulator_transient_failures: number;
+  simulator_last_latency_ms: number | null;
+  fallback_activations: number;
+  snapshot_recoveries: number;
+  sse_reconnects: number;
+  sse_events_seen: number;
+  recommendation_batches: number;
+  recommendations_generated: number;
+  decisions_executed: number;
+  decisions_rejected: number;
+  decisions_blocked: number;
+  active_incidents: number;
+}
+
+export interface SystemHealth {
+  status: "HEALTHY" | "DEGRADED" | "UNAVAILABLE" | "STARTING";
+  tick: number | null;
+  data_freshness: "FRESH" | "STALE" | "UNKNOWN";
+  components: Record<string, { status: string; detail?: string | null }>;
+  degraded_reasons: string[];
+  active_incidents: number;
+}
+
+export interface IncidentRecord {
+  incident_id: string;
+  kind: string;
+  severity: "INFO" | "MEDIUM" | "HIGH" | "CRITICAL";
+  status: "ACTIVE" | "RESOLVED";
+  started_at: string;
+  last_updated_at: string;
+  resolved_at: string | null;
+  tick: number | null;
+  detail: string;
+  occurrences: number;
+}
